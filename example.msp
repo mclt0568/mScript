@@ -1,0 +1,7 @@
+#define_print xprint message1
+#define_print yprint message1
+
+
+
+xprint "hello" 1 2 3;
+yprint "hello2" 3 4 5;

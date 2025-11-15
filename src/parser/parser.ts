@@ -1,6 +1,6 @@
 import { ParserBuildingError } from "./parser-building-error";
 
-export abstract class ParserResult {
+export abstract class ParserResult<A> {
   error: boolean;
   col: number;
 
@@ -8,9 +8,11 @@ export abstract class ParserResult {
     this.error = error;
     this.col = col;
   }
+
+  abstract then<B>(f: (v: A) => B): any;
 }
 
-export class ParserSuccess<A> extends ParserResult {
+export class ParserSuccess<A> extends ParserResult<A> {
   result: A;
   rest: string;
 
@@ -19,14 +21,22 @@ export class ParserSuccess<A> extends ParserResult {
     this.result = result;
     this.rest = rest;
   }
+
+  then<B>(f: (v: A) => B): B {
+    return f(this.result);
+  }
 }
 
-export class ParserError extends ParserResult {
+export class ParserError extends ParserResult<any> {
   message: string;
 
   constructor(message: string, col: number) {
     super(true, col);
     this.message = message;
+  }
+
+  then(f: (v: any) => any): any {
+    return null;
   }
 }
 
@@ -72,13 +82,30 @@ export class Parser<A> {
     });
   }
 
+  static doTap(f: (v: any) => void) {
+    return (v: any) => Parser.tap(f, v);
+  }
+
+  bindTap(f: (v: any) => void) {
+    return this.bind((v: any) => {
+      f(v);
+      return Parser.pure(v);
+    });
+  }
+
   static never = Parser.pure(null);
 
   static anyOf<A>(parsers: Parser<A>[] | (() => Parser<A>[])): Parser<A>;
-  static anyOf<A>(parsers: Parser<A>[] | (() => Parser<A>[]), expectation: string): Parser<A>;
-  static anyOf<A>(parsers: Parser<A>[] | (() => Parser<A>[]), expectation: string | null = null) {
+  static anyOf<A>(
+    parsers: Parser<A>[] | (() => Parser<A>[]),
+    expectation: string
+  ): Parser<A>;
+  static anyOf<A>(
+    parsers: Parser<A>[] | (() => Parser<A>[]),
+    expectation: string | null = null
+  ) {
     return new Parser((s: string) => {
-      const _parsers = (typeof parsers === "function") ? parsers() : parsers;
+      const _parsers = typeof parsers === "function" ? parsers() : parsers;
 
       for (let i = 0; i < _parsers.length; i++) {
         const p = _parsers[i];
@@ -87,8 +114,13 @@ export class Parser<A> {
           continue;
         }
 
-        if (r.error){
-          return new ParserError(`Expected ${expectation}`, r.col)
+        if (r.error) {
+          return new ParserError(
+            expectation === null
+              ? (r as ParserError).message
+              : `Expected ${expectation}`,
+            r.col
+          );
         }
 
         return r;
@@ -112,15 +144,11 @@ export class Parser<A> {
     });
   }
 
-  apply<B>(pf: Parser<(v: A) => B>) {
+  appliedBy<B>(pf: Parser<(v: A) => B>) {
     return Parser.fromParser(this, (s: string) => {
       const pfResult = pf.run(s);
       if (pfResult.error) return pfResult as ParserError;
-      const {
-        result: f,
-        rest,
-        col
-      } = pfResult as ParserSuccess<(v: A) => B>;
+      const { result: f, rest, col } = pfResult as ParserSuccess<(v: A) => B>;
 
       const r = this.run(rest);
       r.col += col;
@@ -130,19 +158,23 @@ export class Parser<A> {
     });
   }
 
+  apply<B>(p: Parser<B>) {
+    return p.appliedBy(this);
+  }
+
   keepLeft(right: Parser<any>) {
-    return right.apply(this.fmap((x) => (_) => x));
+    return right.appliedBy(this.fmap((x) => (_) => x));
   }
 
   keepRight<B>(right: Parser<B>) {
-    return right.apply(this.fmap((_) => (y: B) => y));
+    return right.appliedBy(this.fmap((_) => (y: B) => y));
   }
 
   to<B>(v: B) {
     return Parser.fromParser(this).fmap((_) => v);
   }
 
-  bind<B>(f: (v: A) => Parser<B>) {
+  bind<B>(f: (v: A, rest: string) => Parser<B>) {
     const p = (s: string): ParserError | ParserSuccess<B> => {
       const resultFirst = this.run(s);
       if (resultFirst.error) {
@@ -150,7 +182,7 @@ export class Parser<A> {
       }
 
       const { result, col, rest } = resultFirst as ParserSuccess<A>;
-      const nextParser = Parser.fromParser(f(result));
+      const nextParser = Parser.fromParser(f(result, rest));
       const nextResult = nextParser.run(rest);
       nextResult.col += col;
       return nextResult;
@@ -212,10 +244,34 @@ export class Parser<A> {
     return new Parser(p);
   }
 
+  overrideError(msg: string): Parser<A>;
+  overrideError(msg: (originalMsg: string) => string): Parser<A>;
+  overrideError(msg: string | ((originalMsg: string) => string)): Parser<A> {
+    return Parser.fromParser(this, (s: string) => {
+      const result = this.run(s);
+      if (result.error) {
+        if (typeof msg === "function") {
+          return new ParserError(
+            msg((result as ParserError).message),
+            result.col
+          );
+        }
+        return new ParserError(msg, result.col);
+      }
+      return result;
+    });
+  }
+
+  matchSome(): Parser<A[]>;
+  matchSome(lb: number): Parser<A[]>;
+  matchSome(lb: number, ub: number): Parser<A[]>;
+  matchSome(lb: number, ub: number, sep: Parser<any>): Parser<A[]>;
+  matchSome(lb: number, ub: number, sep: Parser<any>, until: Parser<unknown>): Parser<A[]>;
   matchSome(
     lb: number = 0,
     ub: number = Infinity,
-    sep: Parser<any> = Parser.never
+    sep: Parser<any> = Parser.never,
+    until: Parser<unknown> | null = null
   ) {
     return Parser.fromParser(
       this,
@@ -226,7 +282,7 @@ export class Parser<A> {
           );
         }
 
-        if (ub === lb) {
+        if (ub === 0 && lb === 0) {
           return new ParserSuccess([], s, 0);
         }
 
@@ -245,26 +301,30 @@ export class Parser<A> {
             else {
               parsedCol -= parseResult.col;
               break;
-            };
+            }
           }
           
+          if (until !== null && !until.run(rest).error) {
+            if (i < lb) return new ParserError("Unexpected end of sequence", parsedCol);
+            else {
+              break;
+            }
+          }
+
           const { result: rResult, rest: rRest } =
             parseResult as ParserSuccess<A>;
+
           results.push(rResult);
           rest = rRest;
           continue;
         }
 
-        return new ParserSuccess(
-          results,
-          rest,
-          parsedCol
-        );
+        return new ParserSuccess(results, rest, parsedCol);
       }
     );
   }
 
-  optional() {
+  optional(): Parser<A | null> {
     return Parser.anyOf([this, Parser.never]);
   }
 }

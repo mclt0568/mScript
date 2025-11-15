@@ -1,11 +1,11 @@
 {
-  "name": "mScript",
+  "name": "mscript",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "exec": "tsc && node dist/index.js"
+    "exec": "ts-node -r tsconfig-paths/register src/index.ts"
   },
   "keywords": [],
   "author": "",
@@ -13,6 +13,8 @@
   "packageManager": "pnpm@10.20.0",
   "devDependencies": {
     "source-map-support": "^0.5.21",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
     "typescript": "^5.9.3"
   }
 }
